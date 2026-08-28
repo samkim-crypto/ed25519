@@ -52,7 +52,7 @@ let instruction = verify(&ID, &public_key, &signature, message);
 ### Constraints
 
 - **Verification criteria.** The program always applies [ZIP-215]: the
-  cofactored equation `[8](S·B − H(R‖A‖M)·A) == [8]R`.
+  cofactored equation `[8](S·B − H(R‖A‖M)·A − R) == identity`.
   Small-order and non-canonical points are accepted. Programs needing a
   different variant (e.g. `verify_strict`) should depend on the
   `solana-ed25519-verify` library directly (see
@@ -78,18 +78,22 @@ non-canonical encodings, and small-order rejection (see Henry de Valence's
 [It's 255:19AM]). The `solana-ed25519-verify` crate exposes these as independent
 knobs via `VerificationCriteria`:
 
-| Knob                   | Effect when enabled                                                                          | Extra syscalls                                             |
-| ---------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `cofactored`           | Use `[8](S·B − H·A − R) == identity` instead of the cofactorless `S·B − H·A − R == identity` | +3 `sol_curve_group_op` (multiply-by-8 as three doublings) |
-| `require_canonical_a`  | Reject public keys whose `y`-coordinate is `≥ p`                                             | none                                                       |
-| `require_canonical_r`  | Reject signature `R` whose `y`-coordinate is `≥ p`                                           | none                                                       |
-| `reject_small_order_a` | Reject small-order (torsion) public keys                                                     | +3 `sol_curve_group_op`                                    |
-| `reject_small_order_r` | Reject small-order signature `R` values                                                      | +3 `sol_curve_group_op`                                    |
+| Knob                   | Effect when enabled                                                                          | Extra syscalls                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `cofactored`           | Use `[8](S·B − H·A − R) == identity` instead of the cofactorless `S·B − H·A − R == identity` | +3 `sol_curve_group_op` (1,419 CU), fallback only |
+| `require_canonical_a`  | Reject public keys whose `y`-coordinate is `≥ p`                                             | none                                              |
+| `require_canonical_r`  | Reject signature `R` whose `y`-coordinate is `≥ p`                                           | none                                              |
+| `reject_small_order_a` | Reject small-order (torsion) public keys                                                     | +3 `sol_curve_group_op` (1,419 CU)                |
+| `reject_small_order_r` | Reject small-order signature `R` values                                                      | +3 `sol_curve_group_op` (1,419 CU)                |
 
-Canonical `S` (`S < L`) is enforced for every criteria set and so has no knob:
-`sol_curve_multiscalar_mul` converts scalars through
-`Scalar::from_canonical_bytes` and rejects anything out of range before any
-group operation runs.
+The cofactor multiplication is only reached when a signature fails the exact
+comparison first, so it costs nothing on the path a valid signature follows.
+
+Canonical `S` (`S < L`) has no knob. Every profile worth targeting requires it —
+accepting `S ≥ L` reintroduces signature malleability — and
+`sol_curve_multiscalar_mul` enforces it regardless, converting scalars through
+`Scalar::from_canonical_bytes` and rejecting out-of-range values before any group
+operation runs.
 
 ```rust
 use solana_ed25519_verify::{Ed25519Verifier, VerificationCriteria};
@@ -145,9 +149,11 @@ Solana-specific type.
 | `InvalidEncoding`       | `A` doesn't decode to a valid point, or `S` is non-canonical (`S ≥ L`) |
 | `SignatureMismatch`     | Every input decoded successfully, but the equation doesn't hold        |
 
-`InvalidEncoding` intentionally does not distinguish a malformed public key
-from a non-canonical `S` scalar: the curve syscall that consumes both reports
-only overall success or failure, with no further detail attached.
+`InvalidEncoding` does not distinguish a malformed public key from a
+non-canonical `S` scalar: the syscall that consumes both reports only overall
+success or failure. Telling them apart would mean an explicit `S < L` comparison,
+or decoding `A` ahead of the syscall — compute units spent on every signature for
+precision that only helps malformed input.
 
 The on-chain program collapses all of these to
 `ProgramError::InvalidInstructionData` — see [Constraints](#constraints).
