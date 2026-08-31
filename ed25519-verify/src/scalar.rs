@@ -1,7 +1,7 @@
 //! Small scalar- and field-element helpers needed to assemble Ed25519
 //! verification around syscalls.
 
-use crate::constants::{BASEPOINT_ORDER, FIELD_MODULUS};
+use crate::constants::{BASEPOINT_ORDER_LIMBS, FIELD_MODULUS};
 
 /// Returns `true` if `encoding` is a canonical compressed Edwards point.
 ///
@@ -17,49 +17,66 @@ pub(crate) fn is_canonical_point_encoding(encoding: &[u8; 32]) -> bool {
 }
 
 /// Reduces a 64-byte little-endian integer modulo the ed25519 base point order.
+///
+/// Bit-serial long division: shift the remainder left, shift in the next bit of
+/// the dividend, and subtract `L` whenever the result reaches it. The remainder
+/// is carried as 64-bit limbs rather than bytes, so each step touches four words
+/// instead of thirty-two.
 pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
-    let mut remainder = [0u8; 32];
+    let mut remainder = [0u64; 4];
 
     for bit_index in (0..512).rev() {
         shl1(&mut remainder);
-        if (wide[bit_index / 8] >> (bit_index % 8)) & 1 == 1 {
-            remainder[0] |= 1;
-        }
-        if !cmp_le(&remainder, &BASEPOINT_ORDER).is_lt() {
-            sub_assign(&mut remainder, &BASEPOINT_ORDER);
-        }
+        remainder[0] |= u64::from((wide[bit_index / 8] >> (bit_index % 8)) & 1);
+        conditional_sub_order(&mut remainder);
     }
 
-    remainder
+    let mut reduced = [0u8; 32];
+    for (chunk, limb) in reduced.chunks_exact_mut(8).zip(remainder) {
+        chunk.copy_from_slice(&limb.to_le_bytes());
+    }
+    reduced
 }
 
-fn shl1(value: &mut [u8; 32]) {
-    let mut carry = 0u8;
-    for byte in value {
-        let next_carry = *byte >> 7;
-        *byte = (*byte << 1) | carry;
+/// Doubles `value` in place, discarding the bit shifted out of the top.
+///
+/// The caller keeps `value < L < 2^253` between iterations, so the discarded bit
+/// is always zero.
+fn shl1(value: &mut [u64; 4]) {
+    let mut carry = 0u64;
+    for limb in value {
+        let next_carry = *limb >> 63;
+        *limb = (*limb << 1) | carry;
         carry = next_carry;
     }
 }
 
-fn sub_assign(left: &mut [u8; 32], right: &[u8; 32]) {
-    let mut borrow = 0u16;
-    for (left_byte, right_byte) in left.iter_mut().zip(right) {
-        let minuend = u16::from(*left_byte);
-        let subtrahend = u16::from(*right_byte) + borrow;
-        if minuend >= subtrahend {
-            *left_byte = (minuend - subtrahend) as u8;
-            borrow = 0;
-        } else {
-            *left_byte = (minuend + 256 - subtrahend) as u8;
-            borrow = 1;
-        }
+/// Subtracts `L` from `value` when `value >= L`, without branching on the input.
+fn conditional_sub_order(value: &mut [u64; 4]) {
+    let mut difference = [0u64; 4];
+    let mut borrow = 0u64;
+
+    for index in 0..4 {
+        let (partial, borrow_from_order) =
+            value[index].overflowing_sub(BASEPOINT_ORDER_LIMBS[index]);
+        let (limb, borrow_from_carry) = partial.overflowing_sub(borrow);
+        difference[index] = limb;
+        borrow = u64::from(borrow_from_order | borrow_from_carry);
+    }
+
+    // A borrow out of the top limb means `value < L`, so the difference is
+    // discarded. `mask` is all-ones exactly when the subtraction should apply.
+    let mask = borrow.wrapping_sub(1);
+    for index in 0..4 {
+        value[index] = (value[index] & !mask) | (difference[index] & mask);
     }
 }
 
 pub(crate) fn cmp_le(left: &[u8; 32], right: &[u8; 32]) -> core::cmp::Ordering {
-    for (left_byte, right_byte) in left.iter().zip(right).rev() {
-        match left_byte.cmp(right_byte) {
+    for index in (0..4).rev() {
+        let left_limb = u64::from_le_bytes(left[index * 8..index * 8 + 8].try_into().unwrap());
+        let right_limb = u64::from_le_bytes(right[index * 8..index * 8 + 8].try_into().unwrap());
+        match left_limb.cmp(&right_limb) {
             core::cmp::Ordering::Equal => {}
             ordering => return ordering,
         }
@@ -69,13 +86,59 @@ pub(crate) fn cmp_le(left: &[u8; 32], right: &[u8; 32]) -> core::cmp::Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, crate::constants::BASEPOINT_ORDER};
+
+    fn wide_from_low_32(low: &[u8; 32]) -> [u8; 64] {
+        let mut wide = [0u8; 64];
+        wide[..32].copy_from_slice(low);
+        wide
+    }
 
     #[test]
     fn reduces_group_order_to_zero() {
+        assert_eq!(reduce_wide(&wide_from_low_32(&BASEPOINT_ORDER)), [0; 32]);
+    }
+
+    #[test]
+    fn reduces_order_boundaries() {
+        // L - 1 is already reduced and must pass through unchanged.
+        let mut order_minus_one = BASEPOINT_ORDER;
+        order_minus_one[0] -= 1;
+        assert_eq!(
+            reduce_wide(&wide_from_low_32(&order_minus_one)),
+            order_minus_one
+        );
+
+        // L + 1 must come back as 1.
+        let mut order_plus_one = BASEPOINT_ORDER;
+        order_plus_one[0] += 1;
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        assert_eq!(reduce_wide(&wide_from_low_32(&order_plus_one)), one);
+    }
+
+    // `reduce_wide` is hand-rolled modular arithmetic with a branch-free carry
+    // chain, so it is cross-checked against curve25519-dalek's own wide
+    // reduction rather than against a second copy of the same reasoning.
+    #[test]
+    fn matches_curve25519_dalek_wide_reduction() {
         let mut wide = [0u8; 64];
-        wide[..32].copy_from_slice(&BASEPOINT_ORDER);
-        assert_eq!(reduce_wide(&wide), [0; 32]);
+
+        for round in 0..32u32 {
+            for (index, byte) in wide.iter_mut().enumerate() {
+                *byte = (index as u32).wrapping_mul(31).wrapping_add(round * 7) as u8;
+            }
+
+            let expected =
+                curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(&wide).to_bytes();
+            assert_eq!(reduce_wide(&wide), expected, "round {round}");
+        }
+
+        // Saturated input exercises the widest possible quotient.
+        let saturated = [0xff; 64];
+        let expected =
+            curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(&saturated).to_bytes();
+        assert_eq!(reduce_wide(&saturated), expected);
     }
 
     #[test]

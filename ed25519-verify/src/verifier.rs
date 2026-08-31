@@ -16,9 +16,10 @@ use {
 
 /// Stateless, zero-allocation Ed25519 verifier.
 ///
-/// The verification behavior is selected by [`VerificationCriteria`]. A verifier
-/// created with [`Ed25519Verifier::new`] uses the [`VerificationCriteria::zip215`]
-/// preset, matching this crate's historical behavior.
+/// Behavior is selected by [`VerificationCriteria`]; [`Ed25519Verifier::new`]
+/// uses the [ZIP-215] preset.
+///
+/// [ZIP-215]: VerificationCriteria::zip215
 #[derive(Debug, Clone, Copy)]
 pub struct Ed25519Verifier {
     criteria: VerificationCriteria,
@@ -50,14 +51,11 @@ impl Ed25519Verifier {
         self.criteria
     }
 
-    /// Verifies one Ed25519 signature according to the configured criteria.
+    /// Verifies one Ed25519 signature against the configured criteria.
     ///
-    /// The core relation is `S*B - H(R || A || M)*A == R`. Depending on
-    /// [`VerificationCriteria::cofactored`], the check is performed either
-    /// cofactored — `[8](S*B - H*A - R) == identity`, matching the
-    /// ed25519-zebra batch verification shape — or cofactorless —
-    /// `S*B - H*A - R == identity`. The canonical-encoding and
-    /// small-order rejections are applied first per the configured knobs.
+    /// Checks `S*B - H(R || A || M)*A - R == identity`, multiplied by the
+    /// cofactor 8 when [`VerificationCriteria::cofactored`] is set.
+    /// Canonical-encoding and small-order rejections run first.
     pub fn verify_signature(
         &self,
         signature: &[u8; SIGNATURE_SERIALIZED_SIZE],
@@ -68,13 +66,8 @@ impl Ed25519Verifier {
         let r_bytes: &[u8; 32] = r_bytes.try_into().unwrap();
         let s_bytes: &[u8; 32] = s_bytes.try_into().unwrap();
 
-        // `require_canonical_s` is deliberately not checked because
-        // `multiscalar_multiply_edwards` converts `PodScalar` through
-        // `Scalar::from_canonical_bytes` and returns `None` on a non-canonical
-        // scalar, which maps to `InvalidEncoding` below. Re-checking it
-        // in-program duplicates work the curve backend already performs, and
-        // would not let us distinguish it from a malformed public key anyway
-        // (see `Ed25519VerifyError::InvalidEncoding`).
+        // `S < L` is enforced by the multiscalar-mul syscall, not here; see
+        // `VerificationCriteria` for why there is no knob.
 
         if self.criteria.require_canonical_a && !scalar::is_canonical_point_encoding(public_key) {
             return Err(Ed25519VerifyError::NonCanonicalPublicKey);
@@ -95,22 +88,19 @@ impl Ed25519Verifier {
 
         let challenge = compute_challenge(r_bytes, public_key, message);
 
-        // S*(-B) + H*A = -(S*B - H*A), so this yields the negation of the value
-        // the verification equation compares against R.
+        // `S*(-B) + H*A` is `-(S*B - H*A)`, the negation of the value the
+        // verification equation compares against `R`.
         let neg_lhs = multiscalar_multiply_edwards(
             &[PodScalar(*s_bytes), PodScalar(challenge)],
             &[ED25519_BASEPOINT_NEGATED_COMPRESSED, public_key_point],
         )
         .ok_or(Ed25519VerifyError::InvalidEncoding)?;
 
-        // Flip the sign bit back to recover the encoding of `S*B - H*A`, then
-        // compare against `R` as supplied. `neg_lhs` is canonical, so the flip
-        // yields the canonical encoding of `lhs` (except when `lhs` has x = 0,
-        // where it yields negative zero — which can only miss, never falsely
-        // match). A match therefore implies `R == lhs` as points, so `lhs - R`
-        // is the identity and both the cofactorless and the cofactored equation
-        // hold. Deciding here skips the `subtract_edwards` syscall on the path
-        // every honestly generated signature follows.
+        // Flipping the sign bit recovers the left-hand side's encoding.
+        // `neg_lhs` is canonical, so the flip is too — except at `x = 0`, where
+        // it yields negative zero, which can only miss, never falsely match. A
+        // byte match implies `R == lhs`, satisfying both equations, and skips
+        // `subtract_edwards` on the happy path.
         let mut lhs_bytes = neg_lhs.0;
         lhs_bytes[31] ^= 0x80;
         if lhs_bytes == *r_bytes {
@@ -118,30 +108,24 @@ impl Ed25519Verifier {
         }
 
         let lhs = PodEdwardsPoint(lhs_bytes);
-        // `lhs` is always a valid point by construction (see above), so a
-        // `None` here can only mean `r_point` — built directly from the
-        // caller-supplied `r_bytes` — failed to decode.
+        // `lhs` is valid by construction, so a `None` here means `r_point`,
+        // built from caller-supplied bytes, failed to decode.
         let difference =
             subtract_edwards(&lhs, &r_point).ok_or(Ed25519VerifyError::InvalidEncoding)?;
 
-        // An exact-identity difference satisfies both the cofactorless and the
-        // cofactored equation, so accept it without the cofactor multiplication.
-        // This is the common case for honestly generated (prime-order) signatures,
-        // so it saves the `multiply_by_8` syscalls on the hot path.
+        // Exact identity satisfies both equations, so accept before paying for
+        // the cofactor multiplication.
         if difference == EDWARDS_IDENTITY_COMPRESSED {
             return Ok(());
         }
-        // Cofactorless verification requires an exact identity, which is now ruled
-        // out. Cofactored verification additionally accepts a difference that
-        // clears to identity once multiplied by the cofactor 8 (the mixed-order
-        // points that ZIP-215 tolerates).
+        // Cofactorless requires exact identity, now ruled out; cofactored also
+        // accepts a difference that clears to identity under multiplication by
+        // 8 — the mixed-order points ZIP-215 tolerates.
         if !self.criteria.cofactored {
             return Err(Ed25519VerifyError::SignatureMismatch);
         }
-        // `difference` is a point returned by `subtract_edwards` above, so it
-        // is always a valid encoding; `multiply_by_8` failing here is not
-        // expected to be reachable in practice. `InvalidEncoding` is used
-        // defensively in case it is.
+        // `difference` came from `subtract_edwards`, so `None` should be
+        // unreachable; `InvalidEncoding` is defensive.
         if multiply_by_8(&difference).ok_or(Ed25519VerifyError::InvalidEncoding)?
             != EDWARDS_IDENTITY_COMPRESSED
         {

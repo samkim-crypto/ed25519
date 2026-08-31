@@ -25,27 +25,30 @@
 /// are public so callers can compose arbitrary combinations, typically by
 /// starting from a preset and overriding a single knob:
 ///
-/// Canonical `S` (`S < L`) is enforced for every criteria set and so has no
-/// corresponding field: the curve back-end converts scalars through
-/// `Scalar::from_canonical_bytes` and rejects anything out of range before any
-/// group operation runs.
-///
 /// ```
 /// use solana_ed25519_verify::VerificationCriteria;
 ///
-/// let strict_s = VerificationCriteria {
+/// let custom = VerificationCriteria {
 ///     reject_small_order_a: true,
 ///     ..VerificationCriteria::zip215()
 /// };
 /// ```
+///
+/// Canonical `S` (`S < L`) has no corresponding field. Every profile worth
+/// targeting requires it — accepting `S >= L` reintroduces signature
+/// malleability — and the multiscalar-mul syscall enforces it regardless,
+/// converting scalars through `Scalar::from_canonical_bytes` and rejecting
+/// out-of-range values before any group operation runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VerificationCriteria {
-    /// Use the cofactored verification equation `[8](S·B − H·A) == [8]R`.
+    /// Use the cofactored verification equation
+    /// `[8](S·B − H·A − R) == identity`.
     ///
-    /// When `false`, the cofactorless equation `S·B − H·A == R` is used, which
-    /// rejects mixed-order points that the cofactored equation tolerates. The
-    /// cofactored form costs one extra multiplication by the cofactor 8, which
-    /// the verifier performs as three `sol_curve_group_op` additions.
+    /// When `false`, the cofactorless equation `S·B − H·A − R == identity` is
+    /// used, which rejects mixed-order points that the cofactored equation
+    /// tolerates. The cofactored form costs one extra multiplication by the
+    /// cofactor 8, which the verifier performs as three `sol_curve_group_op`
+    /// additions.
     pub cofactored: bool,
     /// Reject public keys whose compressed `y`-coordinate is `>= p` (a
     /// non-canonical encoding of a reduced point).
@@ -87,13 +90,12 @@ impl VerificationCriteria {
 
     /// The criteria enforced by `ed25519_dalek::VerifyingKey::verify_strict`.
     ///
-    /// Cofactorless verification with canonical `R` and small-order rejection
-    /// for both `A` and `R`. Mirrors ed25519-dalek 2.x exactly, including the
-    /// detail that a non-canonically encoded public key `A` is *not* rejected
-    /// — dalek's `VerifyingKey::from_bytes` decompresses `A` (reducing `y`
-    /// modulo `p`) without a canonicity check, and `verify_strict` only
-    /// re-encodes and compares `R`. Every signature this preset accepts is
-    /// accepted by dalek's `verify_strict`, and vice versa.
+    /// Cofactorless, with canonical `R` and small-order rejection for both `A`
+    /// and `R`. Note that a non-canonically encoded `A` is *not* rejected:
+    /// dalek's `VerifyingKey::from_bytes` decompresses `A` (reducing `y` modulo
+    /// `p`) without a canonicity check, and `verify_strict` only re-encodes and
+    /// compares `R`. The match is exact in both directions, cross-checked in
+    /// the test suite.
     pub const fn dalek_verify_strict() -> Self {
         Self {
             cofactored: false,

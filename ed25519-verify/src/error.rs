@@ -31,12 +31,10 @@ pub enum Ed25519VerifyError {
     /// The public key does not decode to a valid Edwards curve point, or the
     /// signature's `S` scalar is not canonical (`S >= L`).
     ///
-    /// These two causes are not distinguished: telling them apart would
-    /// require either a canonical-`S` check duplicating work the curve
-    /// back-end already performs internally, or a public-key decode check
-    /// ahead of the syscall that computes the verification equation. Both
-    /// would cost compute units on every signature to add precision that
-    /// only benefits the malformed-input case.
+    /// These two causes are not distinguished: the syscall that consumes both
+    /// reports only overall success or failure. Telling them apart would mean an
+    /// explicit `S < L` comparison, or decoding `A` ahead of the syscall — compute
+    /// units spent on every signature for precision that only helps malformed input.
     InvalidEncoding,
     /// The public key, signature, and message all decoded successfully, but
     /// the signature does not satisfy the verification equation.

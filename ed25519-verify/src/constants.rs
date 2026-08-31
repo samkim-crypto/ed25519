@@ -16,6 +16,35 @@ pub(crate) const BASEPOINT_ORDER: [u8; 32] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
 ];
 
+/// Reinterprets a 32-byte little-endian integer as four little-endian 64-bit
+/// limbs.
+///
+/// Evaluated at compile time so that limb constants are derived from their byte
+/// counterparts rather than transcribed by hand a second time.
+const fn to_le_limbs(bytes: [u8; 32]) -> [u64; 4] {
+    let mut limbs = [0u64; 4];
+    let mut limb_index = 0;
+
+    while limb_index < 4 {
+        let mut limb = 0u64;
+        let mut byte_index = 0;
+        while byte_index < 8 {
+            limb |= (bytes[limb_index * 8 + byte_index] as u64) << (byte_index * 8);
+            byte_index += 1;
+        }
+        limbs[limb_index] = limb;
+        limb_index += 1;
+    }
+
+    limbs
+}
+
+/// [`BASEPOINT_ORDER`] as little-endian 64-bit limbs.
+///
+/// Used by the limb-wise reduction in [`crate::scalar`], where a 64-bit borrow
+/// chain replaces a byte-wise one.
+pub(crate) const BASEPOINT_ORDER_LIMBS: [u64; 4] = to_le_limbs(BASEPOINT_ORDER);
+
 /// Field modulus `p = 2^255 - 19` in little-endian form.
 pub(crate) const FIELD_MODULUS: [u8; 32] = [
     0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -45,14 +74,16 @@ pub(crate) const EDWARDS_IDENTITY_COMPRESSED: PodEdwardsPoint =
 
 #[cfg(test)]
 mod tests {
-    use {super::*, curve25519_dalek::traits::Identity};
+    use {
+        super::*,
+        curve25519_dalek::{scalar::Scalar, traits::Identity},
+    };
 
-    // These two constants are hand-transcribed byte literals with no
-    // compiler check that they encode what the doc comments claim.
-    // Cross-checking them against `curve25519-dalek`'s own constants (an
-    // independent implementation, not just a second copy of the same
-    // literal) catches a transcription error immediately instead of relying
-    // on review.
+    // These constants are hand-transcribed byte literals with no compiler check
+    // that they encode what the doc comments claim. Cross-checking them against
+    // `curve25519-dalek` (an independent implementation, not just a second copy
+    // of the same literal) catches a transcription error immediately instead of
+    // relying on review.
 
     #[test]
     fn negated_basepoint_constant_matches_curve25519_dalek() {
@@ -72,5 +103,34 @@ mod tests {
             .to_bytes();
 
         assert_eq!(EDWARDS_IDENTITY_COMPRESSED_BYTES, expected);
+    }
+
+    #[test]
+    fn basepoint_order_matches_curve25519_dalek() {
+        // dalek does not export `L` directly, but `from_canonical_bytes` accepts
+        // exactly the values below it. `L - 1` being accepted and `L` itself
+        // being rejected pins the constant to dalek's group order.
+        let mut order_minus_one = BASEPOINT_ORDER;
+        order_minus_one[0] -= 1;
+
+        assert!(Scalar::from_canonical_bytes(order_minus_one)
+            .into_option()
+            .is_some());
+        assert!(Scalar::from_canonical_bytes(BASEPOINT_ORDER)
+            .into_option()
+            .is_none());
+    }
+
+    #[test]
+    fn basepoint_order_limbs_round_trip_to_bytes() {
+        // Rebuilds the byte constant from the limbs using `to_le_bytes` rather
+        // than the shift loop in `to_le_limbs`, so the two directions are not
+        // the same code checked against itself.
+        let mut bytes = [0u8; 32];
+        for (chunk, limb) in bytes.chunks_exact_mut(8).zip(BASEPOINT_ORDER_LIMBS) {
+            chunk.copy_from_slice(&limb.to_le_bytes());
+        }
+
+        assert_eq!(bytes, BASEPOINT_ORDER);
     }
 }
