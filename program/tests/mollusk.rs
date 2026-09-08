@@ -47,7 +47,7 @@ declare_builtin_function!(
     /// live on mainnet and available in the local Agave/Mollusk runtime.
     SyscallSha512,
     fn rust(
-        _invoke_context: &mut InvokeContext,
+        invoke_context: &mut InvokeContext,
         vals_addr: u64,
         vals_len: u64,
         result_addr: u64,
@@ -55,12 +55,19 @@ declare_builtin_function!(
         _arg5: u64,
         memory_mapping: &mut MemoryMapping,
     ) -> Result<u64, Box<dyn Error>> {
+        let compute_cost = *invoke_context.get_execution_cost();
+        invoke_context.consume_checked(compute_cost.sha256_base_cost)?;
+
         let vals =
             translate_slice::<VmSlice>(memory_mapping, vals_addr, vals_len, AccessType::Load)?
                 .to_vec();
         let mut hasher = solana_sha512_hasher::Hasher::default();
         for val in &vals {
             let bytes = translate_slice::<u8>(memory_mapping, val.ptr, val.len, AccessType::Load)?;
+            let byte_cost = compute_cost
+                .sha256_byte_cost
+                .saturating_mul(val.len / 2);
+            invoke_context.consume_checked(compute_cost.mem_op_base_cost.max(byte_cost))?;
             hasher.hash(bytes);
         }
 
