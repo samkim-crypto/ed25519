@@ -56,6 +56,7 @@ impl Ed25519Verifier {
     /// Checks `S*B - H(R || A || M)*A - R == identity`, multiplied by the
     /// cofactor 8 when [`VerificationCriteria::cofactored`] is set.
     /// Canonical-encoding and small-order rejections run first.
+    #[inline(always)]
     pub fn verify_signature(
         &self,
         signature: &[u8; SIGNATURE_SERIALIZED_SIZE],
