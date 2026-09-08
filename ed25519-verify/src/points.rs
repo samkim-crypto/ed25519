@@ -5,7 +5,10 @@
 
 use {
     crate::{constants::EDWARDS_IDENTITY_COMPRESSED, error::Ed25519VerifyError, scalar},
-    solana_curve25519::edwards::{add_edwards, PodEdwardsPoint},
+    solana_curve25519::{
+        edwards::{add_edwards, PodEdwardsPoint},
+        scalar::PodScalar,
+    },
 };
 
 /// Returns `Ok(true)` if `point` decompresses to a small-order (torsion) point.
@@ -83,6 +86,50 @@ pub(crate) fn is_small_order_canonical(point: &PodEdwardsPoint) -> bool {
         || y == ORDER_TWO_Y
         || y == ORDER_EIGHT_Y0
         || y == ORDER_EIGHT_Y1
+}
+
+/// Computes an Edwards MSM with exactly two scalar-point pairs.
+#[inline(always)]
+pub(crate) fn multiscalar_multiply_edwards_2(
+    scalars: &[PodScalar; 2],
+    points: &[PodEdwardsPoint; 2],
+) -> Option<PodEdwardsPoint> {
+    #[cfg(not(target_os = "solana"))]
+    {
+        solana_curve25519::edwards::multiscalar_multiply_edwards(scalars, points)
+    }
+
+    #[cfg(target_os = "solana")]
+    {
+        use {
+            core::mem::MaybeUninit, solana_define_syscall::definitions::sol_curve_multiscalar_mul,
+        };
+
+        // Edwards25519 selector in Solana's curve syscall ABI.
+        const CURVE25519_EDWARDS: u64 = 0;
+
+        let mut output = MaybeUninit::<PodEdwardsPoint>::uninit();
+
+        // SAFETY: Both input arrays contain exactly two contiguous POD
+        // encodings. The output has space for one encoded point and does
+        // not overlap either input. The syscall validates the encodings.
+        let status = unsafe {
+            sol_curve_multiscalar_mul(
+                CURVE25519_EDWARDS,
+                scalars.as_ptr().cast::<u8>(),
+                points.as_ptr().cast::<u8>(),
+                2,
+                output.as_mut_ptr().cast::<u8>(),
+            )
+        };
+
+        if status != 0 {
+            return None;
+        }
+
+        // SAFETY: A successful syscall writes the complete output point.
+        Some(unsafe { output.assume_init() })
+    }
 }
 
 #[cfg(test)]

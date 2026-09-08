@@ -367,3 +367,43 @@ fn accepts_zip215_torsion_encodings_on_sbf_and_reports_compute_units() {
         );
     }
 }
+
+#[test]
+fn rejects_invalid_msm_inputs_on_sbf() {
+    use {mollusk_svm::result::ProgramResult, pinocchio::error::ProgramError};
+
+    let Some((mollusk, program_id)) = make_mollusk() else {
+        return;
+    };
+
+    const ORDER: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
+        0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x10,
+    ];
+
+    let mut signature = [0u8; SIGNATURE_SERIALIZED_SIZE];
+    signature[..32].copy_from_slice(&EDWARDS_IDENTITY_COMPRESSED);
+
+    // With A = R = identity, reducing S = L to zero would wrongly accept.
+    let mut noncanonical_s = signature;
+    noncanonical_s[32..].copy_from_slice(&ORDER);
+
+    // Compressed y = 2 does not decompress to an Edwards point.
+    let mut invalid_public_key = [0u8; PUBKEY_SERIALIZED_SIZE];
+    invalid_public_key[0] = 2;
+
+    for (case, public_key, signature) in [
+        ("S equals L", EDWARDS_IDENTITY_COMPRESSED, noncanonical_s),
+        ("invalid A", invalid_public_key, signature),
+    ] {
+        let ix = verify(&program_id, &public_key, &signature, b"invalid MSM inputs");
+        let result = mollusk.process_instruction(&ix, &[]);
+
+        assert_eq!(
+            result.program_result,
+            ProgramResult::Failure(ProgramError::InvalidInstructionData),
+            "{case}"
+        );
+    }
+}

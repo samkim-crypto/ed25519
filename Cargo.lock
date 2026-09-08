@@ -2234,6 +2234,7 @@ dependencies = [
  "ed25519-dalek",
  "solana-address 2.7.0",
  "solana-curve25519",
+ "solana-define-syscall 5.1.0",
  "solana-ed25519-verify",
  "solana-instruction",
  "solana-sha512-hasher",

@@ -5,11 +5,14 @@ use {
             PUBKEY_SERIALIZED_SIZE, SIGNATURE_SERIALIZED_SIZE,
         },
         error::Ed25519VerifyError,
-        points::{compute_challenge_into, is_small_order, is_small_order_canonical},
+        points::{
+            compute_challenge_into, is_small_order, is_small_order_canonical,
+            multiscalar_multiply_edwards_2,
+        },
         scalar, VerificationCriteria,
     },
     solana_curve25519::{
-        edwards::{multiscalar_multiply_edwards, subtract_edwards, PodEdwardsPoint},
+        edwards::{subtract_edwards, PodEdwardsPoint},
         scalar::PodScalar,
     },
 };
@@ -92,7 +95,7 @@ impl Ed25519Verifier {
 
         // `S*(-B) + H*A` is `-(S*B - H*A)`, the negation of the value the
         // verification equation compares against `R`.
-        let neg_lhs = multiscalar_multiply_edwards(
+        let neg_lhs = multiscalar_multiply_edwards_2(
             &scalars,
             &[ED25519_BASEPOINT_NEGATED_COMPRESSED, public_key_point],
         )
