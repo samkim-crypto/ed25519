@@ -55,13 +55,13 @@ pub struct VerificationCriteria {
     pub require_canonical_r: bool,
     /// Reject public keys that lie in the small-order (torsion) subgroup.
     ///
-    /// Costs a multiplication by the cofactor 8 (three `sol_curve_group_op`
-    /// additions) when enabled.
+    /// Costs one point addition to validate and canonicalize the encoding,
+    /// followed by a torsion lookup, when enabled.
     pub reject_small_order_a: bool,
     /// Reject signature `R` values that lie in the small-order subgroup.
     ///
-    /// Costs a multiplication by the cofactor 8 (three `sol_curve_group_op`
-    /// additions) when enabled.
+    /// Costs one point addition to validate and canonicalize the encoding,
+    /// followed by a torsion lookup, when enabled.
     pub reject_small_order_r: bool,
 }
 

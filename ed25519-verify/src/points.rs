@@ -13,15 +13,15 @@ use {
 
 /// Returns `Ok(true)` if `point` decompresses to a small-order (torsion) point.
 ///
-/// A point has order dividing the cofactor 8 exactly when `[8]P` is the
-/// identity. This decompresses `point` (accepting non-canonical encodings, which
-/// reduce modulo `p`). An encoding that does not decompress returns
-/// `Err(InvalidEncoding)` so the caller can reject it immediately, rather than
-/// treating it as non-small-order and paying for the subsequent verification
-/// syscalls only to fail there.
+/// Adding the identity validates and canonicalizes the encoding, including
+/// non-canonical encodings accepted by decompression. The resulting point can
+/// then be checked against the canonical torsion encodings.
+///
+/// An encoding that does not decompress returns `Err(InvalidEncoding)`.
 pub(crate) fn is_small_order(point: &PodEdwardsPoint) -> Result<bool, Ed25519VerifyError> {
-    let product = multiply_by_8(point).ok_or(Ed25519VerifyError::InvalidEncoding)?;
-    Ok(product == EDWARDS_IDENTITY_COMPRESSED)
+    let canonical = add_edwards(point, &EDWARDS_IDENTITY_COMPRESSED)
+        .ok_or(Ed25519VerifyError::InvalidEncoding)?;
+    Ok(is_small_order_canonical(&canonical))
 }
 
 /// Multiplies `point` by the cofactor 8 via three point doublings.
@@ -29,6 +29,7 @@ pub(crate) fn is_small_order(point: &PodEdwardsPoint) -> Result<bool, Ed25519Ver
 /// Cheaper than a scalar multiplication by 8: three `sol_curve_group_op`
 /// additions (473 CU each, 1,419 total) versus one multiplication (2,177 CU).
 /// Returns `None` if `point` is not a valid curve encoding.
+#[cfg(test)]
 pub(crate) fn multiply_by_8(point: &PodEdwardsPoint) -> Option<PodEdwardsPoint> {
     let double = add_edwards(point, point)?;
     let quadruple = add_edwards(&double, &double)?;
@@ -266,5 +267,55 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn is_small_order_matches_dalek_on_canonical_and_noncanonical_inputs() {
+        use curve25519_dalek::{
+            constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION},
+            edwards::CompressedEdwardsY,
+            scalar::Scalar,
+        };
+
+        let check = |encoding: [u8; 32]| {
+            let expected = CompressedEdwardsY(encoding)
+                .decompress()
+                .map(|point| point.is_small_order())
+                .ok_or(Ed25519VerifyError::InvalidEncoding);
+
+            assert_eq!(
+                is_small_order(&PodEdwardsPoint(encoding)),
+                expected,
+                "encoding={encoding:02x?}"
+            );
+        };
+
+        for i in 0..16u64 {
+            let prime = ED25519_BASEPOINT_POINT * Scalar::from(i);
+            for torsion in EIGHT_TORSION {
+                check((prime + torsion).compress().to_bytes());
+            }
+        }
+
+        // Every representable non-canonical y = p + n, for both sign bits,
+        // together with its reduced encoding. Includes invalid encodings.
+        for y in 0..19u8 {
+            for sign in [0u8, 0x80] {
+                let mut canonical = [0u8; 32];
+                canonical[0] = y;
+                canonical[31] = sign;
+                check(canonical);
+
+                let mut alias = [0xffu8; 32];
+                alias[0] = 0xed + y;
+                alias[31] = 0x7f | sign;
+                check(alias);
+            }
+        }
+
+        // The order-two point with the sign bit set despite x = 0.
+        let mut negative_zero = [0xffu8; 32];
+        negative_zero[0] = 0xec;
+        check(negative_zero);
     }
 }
