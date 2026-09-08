@@ -73,16 +73,19 @@ pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
     mul_mu_row!(14);
     mul_mu_row!(15);
 
-    // Compute q*L modulo 2^256. Higher quotient limbs cannot affect these bits.
+    // Compute q*L modulo 2^256. The middle order limbs L[4..7] are zero.
     let mut q_l = [0u32; 8];
-    for i in 0..8 {
+    for j in 0..4 {
         let mut carry = 0u64;
-        for j in 0..(8 - i) {
+        for i in 0..(8 - j) {
             let acc = u64::from(product[16 + i]) * u64::from(L[j]) + u64::from(q_l[i + j]) + carry;
             q_l[i + j] = acc as u32;
             carry = acc >> 32;
         }
     }
+
+    // The high order limb contributes only to the highest retained word.
+    q_l[7] = q_l[7].wrapping_add(product[16].wrapping_mul(L[7]));
 
     // Recover x - q*L modulo 2^256. Since 0 <= x - q*L < 2*L < 2^256,
     // these low bits contain the entire remainder.
