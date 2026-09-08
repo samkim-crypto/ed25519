@@ -30,10 +30,7 @@ pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
         let high = limbs[index];
         limbs[index] = 0;
         for (j, &coefficient) in COEFFICIENTS.iter().enumerate() {
-            let low = index - 12 + j;
-            let value = limbs[low] + high * coefficient;
-            limbs[low] = value & 0x1f_ffff;
-            limbs[low + 1] += value >> 21;
+            limbs[index - 12 + j] += high * coefficient;
         }
     }
 
@@ -46,14 +43,22 @@ pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
     }
     limbs[23] = i64::from(u32::from_le_bytes(wide[60..64].try_into().unwrap()) >> 3);
 
-    // Each fold normalizes its six destination limbs immediately, keeping
-    // every multiplication and addition within i64.
+    // Fold the highest six limbs before propagating their carries.
     fold(&mut limbs, 23);
     fold(&mut limbs, 22);
     fold(&mut limbs, 21);
     fold(&mut limbs, 20);
     fold(&mut limbs, 19);
     fold(&mut limbs, 18);
+
+    // Normalize through limb 16 before folding limb 17.
+    // Stop before limb 18, which has already been folded.
+    for i in 6..17 {
+        let carry = limbs[i] >> 21;
+        limbs[i] &= 0x1f_ffff;
+        limbs[i + 1] += carry;
+    }
+
     fold(&mut limbs, 17);
     fold(&mut limbs, 16);
     fold(&mut limbs, 15);
