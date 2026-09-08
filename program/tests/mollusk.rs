@@ -1,6 +1,7 @@
 use {
     ed25519_dalek::{Signer, SigningKey},
-    mollusk_svm::Mollusk,
+    mollusk_svm::{result::ProgramResult, Mollusk},
+    pinocchio::error::ProgramError,
     solana_account::Account,
     solana_address::Address,
     solana_ed25519_verify::{
@@ -218,10 +219,9 @@ fn rejects_tampered_message_on_sbf() {
     ix.data[MESSAGE_OFFSET] ^= 1;
 
     let result = mollusk.process_instruction(&ix, &[]);
-    assert!(
-        result.program_result.is_err(),
-        "expected failure on tampered message, got: {:?}",
-        result.program_result
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure(ProgramError::InvalidInstructionData),
     );
 }
 
@@ -234,10 +234,9 @@ fn rejects_tampered_public_key_on_sbf() {
     ix.data[PUBLIC_KEY_OFFSET] ^= 1;
 
     let result = mollusk.process_instruction(&ix, &[]);
-    assert!(
-        result.program_result.is_err(),
-        "expected failure on tampered public key, got: {:?}",
-        result.program_result
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure(ProgramError::InvalidInstructionData),
     );
 }
 
@@ -252,10 +251,9 @@ fn rejects_accounts_on_sbf() {
     let accounts = [(account, Account::default())];
 
     let result = mollusk.process_instruction(&ix, &accounts);
-    assert!(
-        result.program_result.is_err(),
-        "expected failure when accounts are provided, got: {:?}",
-        result.program_result
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure(ProgramError::InvalidArgument),
     );
 }
 
@@ -267,9 +265,8 @@ fn rejects_short_instruction_on_sbf() {
     let ix = instruction(program_id, vec![0; MESSAGE_OFFSET - 1]);
 
     let result = mollusk.process_instruction(&ix, &[]);
-    assert!(
-        result.program_result.is_err(),
-        "expected failure on short instruction data, got: {:?}",
-        result.program_result
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure(ProgramError::InvalidInstructionData),
     );
 }
