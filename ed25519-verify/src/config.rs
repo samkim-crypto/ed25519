@@ -44,11 +44,9 @@ pub struct VerificationCriteria {
     /// Use the cofactored verification equation
     /// `[8](S·B − H·A − R) == identity`.
     ///
-    /// When `false`, the cofactorless equation `S·B − H·A − R == identity` is
-    /// used, which rejects mixed-order points that the cofactored equation
-    /// tolerates. The cofactored form costs one extra multiplication by the
-    /// cofactor 8, which the verifier performs as three `sol_curve_group_op`
-    /// additions.
+    /// When `false`, the difference must be the identity.
+    /// When `true`, any torsion difference is accepted, using a lookup of
+    /// its canonical compressed encoding.
     pub cofactored: bool,
     /// Reject public keys whose compressed `y`-coordinate is `>= p` (a
     /// non-canonical encoding of a reduced point).

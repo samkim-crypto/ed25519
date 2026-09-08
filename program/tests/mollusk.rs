@@ -319,3 +319,51 @@ fn verifies_signature_corpus_on_sbf_and_reports_compute_units() {
          min_CUs={min_cus}, max_CUs={max_cus}"
     );
 }
+
+#[test]
+fn accepts_zip215_torsion_encodings_on_sbf_and_reports_compute_units() {
+    let Some((mollusk, program_id)) = make_mollusk() else {
+        return;
+    };
+    // Eight canonical torsion encodings, followed by six non-canonical aliases.
+    let encodings = [
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+        "0100000000000000000000000000000000000000000000000000000000000080",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    ];
+
+    for (case, encoded) in encodings.iter().enumerate() {
+        let mut signature = [0u8; SIGNATURE_SERIALIZED_SIZE];
+        for (i, byte) in signature[..32].iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&encoded[2 * i..2 * i + 2], 16).unwrap();
+        }
+        // A = identity and S = 0 leave -R as the verification difference.
+        let ix = verify(
+            &program_id,
+            &EDWARDS_IDENTITY_COMPRESSED,
+            &signature,
+            b"zip215 torsion fallback",
+        );
+        let result = mollusk.process_instruction(&ix, &[]);
+        assert!(
+            result.program_result.is_ok(),
+            "torsion case={case} failed: {:?}",
+            result.program_result
+        );
+        println!(
+            "ed25519 torsion: case={case}, CUs={}",
+            result.compute_units_consumed
+        );
+    }
+}

@@ -5,7 +5,7 @@ use {
             PUBKEY_SERIALIZED_SIZE, SIGNATURE_SERIALIZED_SIZE,
         },
         error::Ed25519VerifyError,
-        points::{compute_challenge_into, is_small_order, multiply_by_8},
+        points::{compute_challenge_into, is_small_order, is_small_order_canonical},
         scalar, VerificationCriteria,
     },
     solana_curve25519::{
@@ -126,11 +126,9 @@ impl Ed25519Verifier {
         if !self.criteria.cofactored {
             return Err(Ed25519VerifyError::SignatureMismatch);
         }
-        // `difference` came from `subtract_edwards`, so `None` should be
-        // unreachable; `InvalidEncoding` is defensive.
-        if multiply_by_8(&difference).ok_or(Ed25519VerifyError::InvalidEncoding)?
-            != EDWARDS_IDENTITY_COMPRESSED
-        {
+        // Subtraction produces a valid, canonical encoding.
+        // Its cofactor multiple is identity exactly when it is a torsion point.
+        if !is_small_order_canonical(&difference) {
             return Err(Ed25519VerifyError::SignatureMismatch);
         }
 

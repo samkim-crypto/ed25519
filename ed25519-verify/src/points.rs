@@ -1,7 +1,6 @@
 //! Edwards curve point operations built on `solana-curve25519` syscalls.
 //!
-//! Covers the cofactor-8 multiplication used both for small-order rejection
-//! and for the ZIP-215 cofactored verification equation, and the Ed25519
+//! Covers small-order checks, the ZIP-215 torsion lookup, and the Ed25519
 //! challenge hash `H(R || A || M) mod L`.
 
 use {
@@ -53,6 +52,37 @@ pub(crate) fn compute_challenge(
     let mut challenge = [0u8; 32];
     compute_challenge_into(signature_r, public_key, message, &mut challenge);
     challenge
+}
+
+/// Tests torsion membership for a valid, canonical curve encoding.
+///
+/// Call this on points produced by curve operations, not unvalidated input.
+#[inline(never)]
+pub(crate) fn is_small_order_canonical(point: &PodEdwardsPoint) -> bool {
+    const ORDER_TWO_Y: [u8; 32] = {
+        let mut y = [0xff; 32];
+        y[0] = 0xec;
+        y[31] = 0x7f;
+        y
+    };
+    const ORDER_EIGHT_Y0: [u8; 32] = [
+        0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0, 0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98,
+        0xf0, 0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39, 0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53,
+        0xfc, 0x05,
+    ];
+    const ORDER_EIGHT_Y1: [u8; 32] = [
+        0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67,
+        0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac,
+        0x03, 0x7a,
+    ];
+
+    let mut y = point.0;
+    y[31] &= 0x7f;
+    y == [0u8; 32]
+        || y == EDWARDS_IDENTITY_COMPRESSED.0
+        || y == ORDER_TWO_Y
+        || y == ORDER_EIGHT_Y0
+        || y == ORDER_EIGHT_Y1
 }
 
 #[cfg(test)]
@@ -144,5 +174,50 @@ mod tests {
         let expected = scalar::reduce_wide(&digest);
 
         assert_eq!(compute_challenge(&r, &a, message), expected);
+    }
+
+    #[test]
+    fn canonical_torsion_lookup_matches_dalek() {
+        use curve25519_dalek::{
+            constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION},
+            scalar::Scalar,
+        };
+
+        for i in 0..16u64 {
+            let prime = ED25519_BASEPOINT_POINT * Scalar::from(i);
+            for torsion in &EIGHT_TORSION {
+                let point = &prime + torsion;
+                let encoded = PodEdwardsPoint(point.compress().to_bytes());
+                assert_eq!(
+                    is_small_order_canonical(&encoded),
+                    point.is_small_order(),
+                    "prime scalar={i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cofactorless_rejects_nonidentity_torsion_differences() {
+        let verifier = crate::Ed25519Verifier::with_criteria(crate::VerificationCriteria {
+            cofactored: false,
+            ..crate::VerificationCriteria::zip215()
+        });
+        let public_key = EDWARDS_IDENTITY_COMPRESSED.0;
+
+        for torsion in &curve25519_dalek::constants::EIGHT_TORSION {
+            let r = torsion.compress().to_bytes();
+            let mut signature = [0u8; 64];
+            signature[..32].copy_from_slice(&r);
+            let expected = if r == public_key {
+                Ok(())
+            } else {
+                Err(Ed25519VerifyError::SignatureMismatch)
+            };
+            assert_eq!(
+                verifier.verify_signature(&signature, &public_key, b"cofactorless torsion"),
+                expected
+            );
+        }
     }
 }
