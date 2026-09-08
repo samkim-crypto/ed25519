@@ -43,16 +43,35 @@ pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
 
     // Compute x * mu. Its limbs starting at index 16 contain floor(x*mu/2^512).
     let mut product = [0u32; 25];
-    for i in 0..16 {
-        let mut carry = 0u64;
-        for j in 0..9 {
-            let acc = u64::from(x[i]) * u64::from(MU[j]) + u64::from(product[i + j]) + carry;
-            product[i + j] = acc as u32;
-            carry = acc >> 32;
-        }
-        // Earlier rows have not touched this limb.
-        product[i + 9] = carry as u32;
+
+    macro_rules! mul_mu_row {
+        ($i:literal) => {{
+            let mut carry = 0u64;
+            for j in 0..9 {
+                let acc = u64::from(x[$i]) * u64::from(MU[j]) + u64::from(product[$i + j]) + carry;
+                product[$i + j] = acc as u32;
+                carry = acc >> 32;
+            }
+            product[$i + 9] = carry as u32;
+        }};
     }
+
+    mul_mu_row!(0);
+    mul_mu_row!(1);
+    mul_mu_row!(2);
+    mul_mu_row!(3);
+    mul_mu_row!(4);
+    mul_mu_row!(5);
+    mul_mu_row!(6);
+    mul_mu_row!(7);
+    mul_mu_row!(8);
+    mul_mu_row!(9);
+    mul_mu_row!(10);
+    mul_mu_row!(11);
+    mul_mu_row!(12);
+    mul_mu_row!(13);
+    mul_mu_row!(14);
+    mul_mu_row!(15);
 
     // Compute q*L modulo 2^256. Higher quotient limbs cannot affect these bits.
     let mut q_l = [0u32; 8];
