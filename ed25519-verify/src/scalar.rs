@@ -16,39 +16,74 @@ pub(crate) fn is_canonical_point_encoding(encoding: &[u8; 32]) -> bool {
     cmp_le(&y, &FIELD_MODULUS).is_lt()
 }
 
-/// Reduces a 64-byte little-endian integer modulo the ed25519 base point order.
+/// Reduces a 64-byte little-endian integer modulo the Ed25519 group order.
 ///
-/// Bit-serial long division: shift the remainder left, shift in the next bit of
-/// the dividend, and subtract `L` whenever the result reaches it. The remainder
-/// is carried as 64-bit limbs rather than bytes, so each step touches four words
-/// instead of thirty-two.
+/// Uses Barrett reduction with mu = floor(2^512 / L). The quotient estimate
+/// is at most one below the true quotient, leaving a remainder below 2*L.
 pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
-    let mut remainder = [0u64; 4];
+    const L: [u32; 8] = [
+        BASEPOINT_ORDER_LIMBS[0] as u32,
+        (BASEPOINT_ORDER_LIMBS[0] >> 32) as u32,
+        BASEPOINT_ORDER_LIMBS[1] as u32,
+        (BASEPOINT_ORDER_LIMBS[1] >> 32) as u32,
+        BASEPOINT_ORDER_LIMBS[2] as u32,
+        (BASEPOINT_ORDER_LIMBS[2] >> 32) as u32,
+        BASEPOINT_ORDER_LIMBS[3] as u32,
+        (BASEPOINT_ORDER_LIMBS[3] >> 32) as u32,
+    ];
+    const MU: [u32; 9] = [
+        0x0a2c131b, 0xed9ce5a3, 0x086329a7, 0x2106215d, 0xffffffeb, 0xffffffff, 0xffffffff,
+        0xffffffff, 0x0000000f,
+    ];
 
-    for bit_index in (0..512).rev() {
-        shl1(&mut remainder);
-        remainder[0] |= u64::from((wide[bit_index / 8] >> (bit_index % 8)) & 1);
-        conditional_sub_order(&mut remainder);
+    let mut x = [0u32; 16];
+    for (limb, bytes) in x.iter_mut().zip(wide.chunks_exact(4)) {
+        *limb = u32::from_le_bytes(bytes.try_into().unwrap());
     }
+
+    // Compute x * mu. Its limbs starting at index 16 contain floor(x*mu/2^512).
+    let mut product = [0u32; 25];
+    for i in 0..16 {
+        let mut carry = 0u64;
+        for j in 0..9 {
+            let acc = u64::from(x[i]) * u64::from(MU[j]) + u64::from(product[i + j]) + carry;
+            product[i + j] = acc as u32;
+            carry = acc >> 32;
+        }
+        // Earlier rows have not touched this limb.
+        product[i + 9] = carry as u32;
+    }
+
+    // Compute q*L modulo 2^256. Higher quotient limbs cannot affect these bits.
+    let mut q_l = [0u32; 8];
+    for i in 0..8 {
+        let mut carry = 0u64;
+        for j in 0..(8 - i) {
+            let acc = u64::from(product[16 + i]) * u64::from(L[j]) + u64::from(q_l[i + j]) + carry;
+            q_l[i + j] = acc as u32;
+            carry = acc >> 32;
+        }
+    }
+
+    // Recover x - q*L modulo 2^256. Since 0 <= x - q*L < 2*L < 2^256,
+    // these low bits contain the entire remainder.
+    let mut remainder = [0u64; 4];
+    let mut borrow = 0u64;
+    for i in 0..8 {
+        let difference = u64::from(x[i])
+            .wrapping_sub(u64::from(q_l[i]))
+            .wrapping_sub(borrow);
+        remainder[i / 2] |= u64::from(difference as u32) << ((i % 2) * 32);
+        borrow = difference >> 63;
+    }
+
+    conditional_sub_order(&mut remainder);
 
     let mut reduced = [0u8; 32];
     for (chunk, limb) in reduced.chunks_exact_mut(8).zip(remainder) {
         chunk.copy_from_slice(&limb.to_le_bytes());
     }
     reduced
-}
-
-/// Doubles `value` in place, discarding the bit shifted out of the top.
-///
-/// The caller keeps `value < L < 2^253` between iterations, so the discarded bit
-/// is always zero.
-fn shl1(value: &mut [u64; 4]) {
-    let mut carry = 0u64;
-    for limb in value {
-        let next_carry = *limb >> 63;
-        *limb = (*limb << 1) | carry;
-        carry = next_carry;
-    }
 }
 
 /// Subtracts `L` from `value` when `value >= L`, without branching on the input.
