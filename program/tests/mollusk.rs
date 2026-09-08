@@ -270,3 +270,52 @@ fn rejects_short_instruction_on_sbf() {
         ProgramResult::Failure(ProgramError::InvalidInstructionData),
     );
 }
+
+#[test]
+fn verifies_signature_corpus_on_sbf_and_reports_compute_units() {
+    let Some((mollusk, program_id)) = make_mollusk() else {
+        return;
+    };
+
+    let mut cases = 0u64;
+    let mut total_cus = 0u64;
+    let mut min_cus = u64::MAX;
+    let mut max_cus = 0u64;
+
+    for seed in [7u8, 42, 99, 201] {
+        let signing_key = SigningKey::from_bytes(&[seed; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+
+        for message_len in [0usize, 1, 38, 47, 48, 49, 128, 1024] {
+            let message = if message_len == SINGLE_MESSAGE.len() {
+                SINGLE_MESSAGE.to_vec()
+            } else {
+                (0..message_len)
+                    .map(|index| (index as u8).wrapping_mul(31).wrapping_add(17))
+                    .collect::<Vec<u8>>()
+            };
+            let signature = signing_key.sign(&message).to_bytes();
+            let ix = verify(&program_id, &public_key, &signature, &message);
+
+            let result = mollusk.process_instruction(&ix, &[]);
+            assert_eq!(
+                result.program_result,
+                ProgramResult::Success,
+                "corpus verification failed: seed={seed}, message_len={message_len}",
+            );
+
+            let cus = result.compute_units_consumed;
+            println!("ed25519 corpus: seed={seed}, message_bytes={message_len}, CUs={cus}");
+
+            cases += 1;
+            total_cus += cus;
+            min_cus = min_cus.min(cus);
+            max_cus = max_cus.max(cus);
+        }
+    }
+
+    println!(
+        "ed25519 corpus summary: cases={cases}, total_CUs={total_cus}, \
+         min_CUs={min_cus}, max_CUs={max_cus}"
+    );
+}
