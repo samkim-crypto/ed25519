@@ -20,7 +20,7 @@ pub(crate) fn is_canonical_point_encoding(encoding: &[u8; 32]) -> bool {
 ///
 /// Uses Barrett reduction with mu = floor(2^512 / L). The quotient estimate
 /// is at most one below the true quotient, leaving a remainder below 2*L.
-pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
+pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
     const L: [u32; 8] = [
         BASEPOINT_ORDER_LIMBS[0] as u32,
         (BASEPOINT_ORDER_LIMBS[0] >> 32) as u32,
@@ -98,10 +98,15 @@ pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
 
     conditional_sub_order(&mut remainder);
 
-    let mut reduced = [0u8; 32];
     for (chunk, limb) in reduced.chunks_exact_mut(8).zip(remainder) {
         chunk.copy_from_slice(&limb.to_le_bytes());
     }
+}
+
+#[cfg(test)]
+pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
+    let mut reduced = [0u8; 32];
+    reduce_wide_into(wide, &mut reduced);
     reduced
 }
 

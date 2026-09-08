@@ -34,13 +34,25 @@ pub(crate) fn multiply_by_8(point: &PodEdwardsPoint) -> Option<PodEdwardsPoint> 
 }
 
 /// Computes the Ed25519 challenge scalar `H(R || A || M) mod L`.
+pub(crate) fn compute_challenge_into(
+    signature_r: &[u8; 32],
+    public_key: &[u8; 32],
+    message: &[u8],
+    challenge: &mut [u8; 32],
+) {
+    let digest = solana_sha512_hasher::hashv(&[signature_r, public_key, message]).to_bytes();
+    scalar::reduce_wide_into(&digest, challenge);
+}
+
+#[cfg(test)]
 pub(crate) fn compute_challenge(
     signature_r: &[u8; 32],
     public_key: &[u8; 32],
     message: &[u8],
 ) -> [u8; 32] {
-    let digest = solana_sha512_hasher::hashv(&[signature_r, public_key, message]).to_bytes();
-    scalar::reduce_wide(&digest)
+    let mut challenge = [0u8; 32];
+    compute_challenge_into(signature_r, public_key, message, &mut challenge);
+    challenge
 }
 
 #[cfg(test)]

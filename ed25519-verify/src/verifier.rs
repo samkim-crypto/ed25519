@@ -5,7 +5,7 @@ use {
             PUBKEY_SERIALIZED_SIZE, SIGNATURE_SERIALIZED_SIZE,
         },
         error::Ed25519VerifyError,
-        points::{compute_challenge, is_small_order, multiply_by_8},
+        points::{compute_challenge_into, is_small_order, multiply_by_8},
         scalar, VerificationCriteria,
     },
     solana_curve25519::{
@@ -86,12 +86,13 @@ impl Ed25519Verifier {
             return Err(Ed25519VerifyError::SmallOrderR);
         }
 
-        let challenge = compute_challenge(r_bytes, public_key, message);
+        let mut scalars = [PodScalar(*s_bytes), PodScalar([0u8; 32])];
+        compute_challenge_into(r_bytes, public_key, message, &mut scalars[1].0);
 
         // `S*(-B) + H*A` is `-(S*B - H*A)`, the negation of the value the
         // verification equation compares against `R`.
         let neg_lhs = multiscalar_multiply_edwards(
-            &[PodScalar(*s_bytes), PodScalar(challenge)],
+            &scalars,
             &[ED25519_BASEPOINT_NEGATED_COMPRESSED, public_key_point],
         )
         .ok_or(Ed25519VerifyError::InvalidEncoding)?;
