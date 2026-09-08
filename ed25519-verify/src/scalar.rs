@@ -18,88 +18,91 @@ pub(crate) fn is_canonical_point_encoding(encoding: &[u8; 32]) -> bool {
 
 /// Reduces a 64-byte little-endian integer modulo the Ed25519 group order.
 ///
-/// Uses Barrett reduction with mu = floor(2^512 / L). The quotient estimate
-/// is at most one below the true quotient, leaving a remainder below 2*L.
+/// Uses radix-2^21 limbs and the relation 2^252 = -c (mod L), where
+/// L = 2^252 + c. After folding, -L < r < L; adding L when r is negative
+/// produces the canonical scalar.
 pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
-    const L: [u32; 8] = [
-        BASEPOINT_ORDER_LIMBS[0] as u32,
-        (BASEPOINT_ORDER_LIMBS[0] >> 32) as u32,
-        BASEPOINT_ORDER_LIMBS[1] as u32,
-        (BASEPOINT_ORDER_LIMBS[1] >> 32) as u32,
-        BASEPOINT_ORDER_LIMBS[2] as u32,
-        (BASEPOINT_ORDER_LIMBS[2] >> 32) as u32,
-        BASEPOINT_ORDER_LIMBS[3] as u32,
-        (BASEPOINT_ORDER_LIMBS[3] >> 32) as u32,
-    ];
-    const MU: [u32; 9] = [
-        0x0a2c131b, 0xed9ce5a3, 0x086329a7, 0x2106215d, 0xffffffeb, 0xffffffff, 0xffffffff,
-        0xffffffff, 0x0000000f,
-    ];
+    #[inline(always)]
+    fn fold(limbs: &mut [i64; 24], index: usize) {
+        // The radix-2^21 expansion of -c.
+        const COEFFICIENTS: [i64; 6] = [666643, 470296, 654183, -997805, 136657, -683901];
 
-    let mut x = [0u32; 16];
-    for (limb, bytes) in x.iter_mut().zip(wide.chunks_exact(4)) {
-        *limb = u32::from_le_bytes(bytes.try_into().unwrap());
-    }
-
-    // Compute x * mu. Its limbs starting at index 16 contain floor(x*mu/2^512).
-    let mut product = [0u32; 25];
-
-    macro_rules! mul_mu_row {
-        ($i:literal) => {{
-            let mut carry = 0u64;
-            for j in 0..9 {
-                let acc = u64::from(x[$i]) * u64::from(MU[j]) + u64::from(product[$i + j]) + carry;
-                product[$i + j] = acc as u32;
-                carry = acc >> 32;
-            }
-            product[$i + 9] = carry as u32;
-        }};
-    }
-
-    mul_mu_row!(0);
-    mul_mu_row!(1);
-    mul_mu_row!(2);
-    mul_mu_row!(3);
-    mul_mu_row!(4);
-    mul_mu_row!(5);
-    mul_mu_row!(6);
-    mul_mu_row!(7);
-    mul_mu_row!(8);
-    mul_mu_row!(9);
-    mul_mu_row!(10);
-    mul_mu_row!(11);
-    mul_mu_row!(12);
-    mul_mu_row!(13);
-    mul_mu_row!(14);
-    mul_mu_row!(15);
-
-    // Compute q*L modulo 2^256. The middle order limbs L[4..7] are zero.
-    let mut q_l = [0u32; 8];
-    for j in 0..4 {
-        let mut carry = 0u64;
-        for i in 0..(8 - j) {
-            let acc = u64::from(product[16 + i]) * u64::from(L[j]) + u64::from(q_l[i + j]) + carry;
-            q_l[i + j] = acc as u32;
-            carry = acc >> 32;
+        let high = limbs[index];
+        limbs[index] = 0;
+        for (j, &coefficient) in COEFFICIENTS.iter().enumerate() {
+            let low = index - 12 + j;
+            let value = limbs[low] + high * coefficient;
+            limbs[low] = value & 0x1f_ffff;
+            limbs[low + 1] += value >> 21;
         }
     }
 
-    // The high order limb contributes only to the highest retained word.
-    q_l[7] = q_l[7].wrapping_add(product[16].wrapping_mul(L[7]));
+    let mut limbs = [0i64; 24];
+    for i in 0..23 {
+        let bit = i * 21;
+        let byte = bit / 8;
+        let word = u32::from_le_bytes(wide[byte..byte + 4].try_into().unwrap());
+        limbs[i] = i64::from((word >> (bit % 8)) & 0x1f_ffff);
+    }
+    limbs[23] = i64::from(u32::from_le_bytes(wide[60..64].try_into().unwrap()) >> 3);
 
-    // Recover x - q*L modulo 2^256. Since 0 <= x - q*L < 2*L < 2^256,
-    // these low bits contain the entire remainder.
-    let mut remainder = [0u64; 4];
-    let mut borrow = 0u64;
-    for i in 0..8 {
-        let difference = u64::from(x[i])
-            .wrapping_sub(u64::from(q_l[i]))
-            .wrapping_sub(borrow);
-        remainder[i / 2] |= u64::from(difference as u32) << ((i % 2) * 32);
-        borrow = difference >> 63;
+    // Each fold normalizes its six destination limbs immediately, keeping
+    // every multiplication and addition within i64.
+    fold(&mut limbs, 23);
+    fold(&mut limbs, 22);
+    fold(&mut limbs, 21);
+    fold(&mut limbs, 20);
+    fold(&mut limbs, 19);
+    fold(&mut limbs, 18);
+    fold(&mut limbs, 17);
+    fold(&mut limbs, 16);
+    fold(&mut limbs, 15);
+    fold(&mut limbs, 14);
+    fold(&mut limbs, 13);
+    fold(&mut limbs, 12);
+
+    for i in 0..12 {
+        let carry = limbs[i] >> 21;
+        limbs[i] &= 0x1f_ffff;
+        limbs[i + 1] += carry;
     }
 
-    conditional_sub_order(&mut remainder);
+    // Here limbs[12] is in [-1, 28], and the lower twelve limbs encode
+    // a value below 2^252. Folding once more gives -28*c <= r < L.
+    // Since 28*c < L, a negative remainder needs exactly one addition of L.
+    fold(&mut limbs, 12);
+    for i in 0..11 {
+        let carry = limbs[i] >> 21;
+        limbs[i] &= 0x1f_ffff;
+        limbs[i + 1] += carry;
+    }
+
+    // Pack r modulo 2^256. The top limb retains the sign of r.
+    let mut remainder = [
+        (limbs[0] as u64)
+            | ((limbs[1] as u64) << 21)
+            | ((limbs[2] as u64) << 42)
+            | ((limbs[3] as u64) << 63),
+        ((limbs[3] as u64) >> 1)
+            | ((limbs[4] as u64) << 20)
+            | ((limbs[5] as u64) << 41)
+            | ((limbs[6] as u64) << 62),
+        ((limbs[6] as u64) >> 2)
+            | ((limbs[7] as u64) << 19)
+            | ((limbs[8] as u64) << 40)
+            | ((limbs[9] as u64) << 61),
+        ((limbs[9] as u64) >> 3) | ((limbs[10] as u64) << 18) | ((limbs[11] as u64) << 39),
+    ];
+
+    let mask = 0u64.wrapping_sub(remainder[3] >> 63);
+    let mut carry = 0u64;
+    for i in 0..4 {
+        let (partial, carry_from_order) =
+            remainder[i].overflowing_add(BASEPOINT_ORDER_LIMBS[i] & mask);
+        let (limb, carry_from_carry) = partial.overflowing_add(carry);
+        remainder[i] = limb;
+        carry = u64::from(carry_from_order | carry_from_carry);
+    }
 
     for (chunk, limb) in reduced.chunks_exact_mut(8).zip(remainder) {
         chunk.copy_from_slice(&limb.to_le_bytes());
@@ -111,33 +114,6 @@ pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
     let mut reduced = [0u8; 32];
     reduce_wide_into(wide, &mut reduced);
     reduced
-}
-
-/// Subtracts `L` from `value` when `value >= L`, without branching on the input.
-///
-/// Requires `value < 2*L`, as guaranteed by the Barrett reduction.
-fn conditional_sub_order(value: &mut [u64; 4]) {
-    let mut difference = [0u64; 4];
-    let mut borrow = 0u64;
-
-    for index in 0..3 {
-        let (partial, borrow_from_order) =
-            value[index].overflowing_sub(BASEPOINT_ORDER_LIMBS[index]);
-        let (limb, borrow_from_carry) = partial.overflowing_sub(borrow);
-        difference[index] = limb;
-        borrow = u64::from(borrow_from_order | borrow_from_carry);
-    }
-
-    difference[3] = value[3]
-        .wrapping_sub(BASEPOINT_ORDER_LIMBS[3])
-        .wrapping_sub(borrow);
-
-    // With value < 2*L, the signed top-limb difference lies in
-    // [-2^60 - 1, 2^60]. Its high bit therefore gives the final borrow.
-    let mask = (difference[3] >> 63).wrapping_sub(1);
-    for index in 0..4 {
-        value[index] = (value[index] & !mask) | (difference[index] & mask);
-    }
 }
 
 pub(crate) fn cmp_le(left: &[u8; 32], right: &[u8; 32]) -> core::cmp::Ordering {
