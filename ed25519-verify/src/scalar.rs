@@ -111,11 +111,13 @@ pub(crate) fn reduce_wide(wide: &[u8; 64]) -> [u8; 32] {
 }
 
 /// Subtracts `L` from `value` when `value >= L`, without branching on the input.
+///
+/// Requires `value < 2*L`, as guaranteed by the Barrett reduction.
 fn conditional_sub_order(value: &mut [u64; 4]) {
     let mut difference = [0u64; 4];
     let mut borrow = 0u64;
 
-    for index in 0..4 {
+    for index in 0..3 {
         let (partial, borrow_from_order) =
             value[index].overflowing_sub(BASEPOINT_ORDER_LIMBS[index]);
         let (limb, borrow_from_carry) = partial.overflowing_sub(borrow);
@@ -123,9 +125,13 @@ fn conditional_sub_order(value: &mut [u64; 4]) {
         borrow = u64::from(borrow_from_order | borrow_from_carry);
     }
 
-    // A borrow out of the top limb means `value < L`, so the difference is
-    // discarded. `mask` is all-ones exactly when the subtraction should apply.
-    let mask = borrow.wrapping_sub(1);
+    difference[3] = value[3]
+        .wrapping_sub(BASEPOINT_ORDER_LIMBS[3])
+        .wrapping_sub(borrow);
+
+    // With value < 2*L, the signed top-limb difference lies in
+    // [-2^60 - 1, 2^60]. Its high bit therefore gives the final borrow.
+    let mask = (difference[3] >> 63).wrapping_sub(1);
     for index in 0..4 {
         value[index] = (value[index] & !mask) | (difference[index] & mask);
     }
