@@ -142,6 +142,75 @@ mod tests {
     }
 
     #[test]
+    fn matches_dalek_on_wide_reduction_boundaries_and_random_inputs() {
+        fn check(wide: &[u8; 64]) {
+            let expected =
+                curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(wide).to_bytes();
+            assert_eq!(reduce_wide(wide), expected, "wide input: {wide:02x?}");
+        }
+
+        fn check_neighbors(wide: [u8; 64]) {
+            check(&wide);
+
+            let mut below = wide;
+            for byte in &mut below {
+                let (value, borrow) = byte.overflowing_sub(1);
+                *byte = value;
+                if !borrow {
+                    break;
+                }
+            }
+            check(&below);
+
+            let mut above = wide;
+            for byte in &mut above {
+                let (value, carry) = byte.overflowing_add(1);
+                *byte = value;
+                if !carry {
+                    break;
+                }
+            }
+            check(&above);
+        }
+
+        check(&[0; 64]);
+        check(&[0xff; 64]);
+
+        // Powers of two and their neighbors across every bit position.
+        for bit in 0..512usize {
+            let mut wide = [0u8; 64];
+            wide[bit / 8] = 1u8 << (bit % 8);
+            check_neighbors(wide);
+        }
+
+        // L * 2^shift and its neighbors, through the highest fitting shift.
+        let mut shifted_order = wide_from_low_32(&BASEPOINT_ORDER);
+        for _ in 0..=259 {
+            check_neighbors(shifted_order);
+
+            let mut carry = 0u8;
+            for byte in &mut shifted_order {
+                let next_carry = *byte >> 7;
+                *byte = (*byte << 1) | carry;
+                carry = next_carry;
+            }
+        }
+
+        // Deterministic test inputs; this PRNG is not used by the verifier.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..4096 {
+            let mut wide = [0u8; 64];
+            for chunk in wide.chunks_exact_mut(8) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                chunk.copy_from_slice(&state.to_le_bytes());
+            }
+            check(&wide);
+        }
+    }
+
+    #[test]
     fn accepts_reduced_encodings() {
         // y = 0
         assert!(is_canonical_point_encoding(&[0; 32]));
