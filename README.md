@@ -19,11 +19,11 @@ succeeded.
 
 ## Syscalls used
 
-| Syscall                     | SDK wrapper                                                   |
-| --------------------------- | ------------------------------------------------------------- |
-| `sol_sha512`                | `solana_sha512_hasher::hashv`                                 |
-| `sol_curve_group_op`        | `solana_curve25519::edwards::{add_edwards, subtract_edwards}` |
-| `sol_curve_multiscalar_mul` | `solana_curve25519::edwards::multiscalar_multiply_edwards`    |
+| Syscall                     | Wrapper or entry point                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------------------- |
+| `sol_sha512`                | `solana_sha512_hasher::hashv`                                                                       |
+| `sol_curve_group_op`        | `solana_curve25519::edwards::{add_edwards, subtract_edwards}`                                       |
+| `sol_curve_multiscalar_mul` | Fixed two-term wrapper using `solana_define_syscall::definitions::sol_curve_multiscalar_mul` on SBF |
 
 `sol_sha512` is not live on mainnet yet. The wrapper crate is published as
 `solana-sha512-hasher`, and a local/custom VM must enable the SHA-512 syscall
@@ -78,19 +78,27 @@ non-canonical encodings, and small-order rejection (see Henry de Valence's
 [It's 255:19AM]). The `solana-ed25519-verify` crate exposes these as independent
 knobs via `VerificationCriteria`:
 
-| Knob                   | Effect when enabled                                                                          | Extra syscalls                                    |
-| ---------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `cofactored`           | Use `[8](S·B − H·A − R) == identity` instead of the cofactorless `S·B − H·A − R == identity` | +3 `sol_curve_group_op` (1,419 CU), fallback only |
-| `require_canonical_a`  | Reject public keys whose `y`-coordinate is `≥ p`                                             | none                                              |
-| `require_canonical_r`  | Reject signature `R` whose `y`-coordinate is `≥ p`                                           | none                                              |
-| `reject_small_order_a` | Reject small-order (torsion) public keys                                                     | +3 `sol_curve_group_op` (1,419 CU)                |
-| `reject_small_order_r` | Reject small-order signature `R` values                                                      | +3 `sol_curve_group_op` (1,419 CU)                |
+| Knob                   | Effect when enabled                                                                          | Extra curve syscalls                            |
+| ---------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `cofactored`           | Use `[8](S·B − H·A − R) == identity` instead of the cofactorless `S·B − H·A − R == identity` | none; torsion lookup on the fallback difference |
+| `require_canonical_a`  | Reject public keys whose `y`-coordinate is `≥ p`                                             | none                                            |
+| `require_canonical_r`  | Reject signature `R` whose `y`-coordinate is `≥ p`                                           | none                                            |
+| `reject_small_order_a` | Reject small-order (torsion) public keys                                                     | +1 addition (473 CU), plus a torsion lookup     |
+| `reject_small_order_r` | Reject small-order signature `R` values                                                      | +1 addition (473 CU), plus a torsion lookup     |
 
-The cofactor multiplication is only reached when a signature fails the exact
-comparison first, so it costs nothing on the path a valid signature follows.
+The verifier first compares the computed point encoding with `R`. If they differ,
+it subtracts `R` and checks the resulting point. The cofactored profile tests this
+canonical difference against the torsion encodings, replacing three doublings
+with a lookup. This lookup is skipped when the initial comparison succeeds.
 
-Canonical `S` (`S < L`) has no knob. Every profile worth targeting requires it —
-accepting `S ≥ L` reintroduces signature malleability — and
+Each small-order input check adds the identity to validate the input and produce
+a canonical encoding before the lookup. This preserves support for valid
+non-canonical encodings and rejects inputs that do not decompress. The 473 CU
+figure above is the addition syscall charge in the benchmark runtime; the total
+check also includes the surrounding SBF instructions.
+
+Canonical `S` (`S < L`) has no knob. Every profile worth targeting requires it â€”
+accepting `S ≥ L` reintroduces signature malleability and
 `sol_curve_multiscalar_mul` enforces it regardless, converting scalars through
 `Scalar::from_canonical_bytes` and rejecting out-of-range values before any group
 operation runs.
@@ -208,3 +216,57 @@ unless `SBF_OUT_DIR` is set. Because published Mollusk/Agave crates do not yet
 register `sol_sha512`, `program/tests/mollusk.rs` installs a local SHA-512
 syscall shim before loading the SBF program. A production/localnet VM must
 register the real `sol_sha512` syscall instead.
+
+## Compute units
+
+The measurements below were collected on September 8, 2026, using an SBF v2
+release build, Mollusk `0.13.1`, and the metered SHA-512 test syscall shim. They
+include execution of the program wrapper and the syscall charges in that
+harness. These are compute-unit measurements, not host execution times.
+
+The signature corpus contains 32 cases: signing-key seeds `7`, `42`, `99`, and
+`201`, each tested with the eight message lengths below. For each message length,
+all four seeds consumed the same number of compute units in the final measured
+build.
+
+|     Message bytes | Default ZIP-215 CU |    Strict CU |
+| ----------------: | -----------------: | -----------: |
+|                 0 |              3,847 |        4,980 |
+|                 1 |              3,847 |        4,980 |
+|                38 |              3,856 |        4,989 |
+|                47 |              3,860 |        4,993 |
+|                48 |              3,861 |        4,994 |
+|                49 |              3,861 |        4,994 |
+|               128 |              3,901 |        5,034 |
+|             1,024 |              4,349 |        5,482 |
+| **32-case total** |        **125,528** |  **161,784** |
+| **Mean per case** |       **3,922.75** | **5,055.75** |
+
+The separate 38-byte signature fixture also consumes **3,856 CU** with ZIP-215
+and **4,989 CU** with `VerificationCriteria::dalek_verify_strict()`. The strict
+column was measured using a separate build of the same program wrapper with
+that preset selected. The shipped program continues to use ZIP-215.
+
+Other measured paths in the default ZIP-215 build:
+
+| Test case                                        |                                 CU |
+| ------------------------------------------------ | ---------------------------------: |
+| Accepted small-order public-key fixture          |                              4,388 |
+| Accepted torsion encodings, 14 cases             | 3,848-4,400 per case; 60,898 total |
+| Tampered message or public key                   |                         4,403 each |
+| Non-canonical `S` or invalid public-key encoding |                         3,836 each |
+| Unexpected accounts                              |                                 18 |
+| Instruction shorter than 96 bytes                |                                 21 |
+
+To reproduce the default program measurements:
+
+```sh
+cargo build-sbf --arch v2 --manifest-path program/Cargo.toml \
+    --sbf-out-dir "$PWD/target/deploy"
+SBF_OUT_DIR="$PWD/target/deploy" cargo test --locked \
+    -p solana-ed25519-program --test mollusk \
+    -- --nocapture --test-threads=1
+```
+
+Changing the SBF toolchain, dependencies, or syscall cost model can change these
+results. Compare builds using the same corpus and metered syscall shim.
