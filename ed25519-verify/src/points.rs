@@ -13,9 +13,9 @@ use {
 
 /// Returns `Ok(true)` if `point` decompresses to a small-order (torsion) point.
 ///
-/// Adding the identity validates and canonicalizes the encoding, including
-/// non-canonical encodings accepted by decompression. The resulting point can
-/// then be checked against the canonical torsion encodings.
+/// Adding the identity validates the input and produces a canonical encoding.
+/// This accepts non-canonical encodings supported by decompression. The result
+/// can then be checked against the canonical torsion encodings.
 ///
 /// An encoding that does not decompress returns `Err(InvalidEncoding)`.
 pub(crate) fn is_small_order(point: &PodEdwardsPoint) -> Result<bool, Ed25519VerifyError> {
@@ -60,7 +60,7 @@ pub(crate) fn compute_challenge(
 
 /// Tests torsion membership for a valid, canonical curve encoding.
 ///
-/// Call this on points produced by curve operations, not unvalidated input.
+/// Use only with canonical encodings returned by successful curve operations.
 #[inline(never)]
 pub(crate) fn is_small_order_canonical(point: &PodEdwardsPoint) -> bool {
     const ORDER_TWO_Y: [u8; 32] = {
@@ -234,7 +234,7 @@ mod tests {
         for i in 0..16u64 {
             let prime = ED25519_BASEPOINT_POINT * Scalar::from(i);
             for torsion in &EIGHT_TORSION {
-                let point = &prime + torsion;
+                let point = prime + torsion;
                 let encoded = PodEdwardsPoint(point.compress().to_bytes());
                 assert_eq!(
                     is_small_order_canonical(&encoded),

@@ -18,9 +18,9 @@ pub(crate) fn is_canonical_point_encoding(encoding: &[u8; 32]) -> bool {
 
 /// Reduces a 64-byte little-endian integer modulo the Ed25519 group order.
 ///
-/// Uses radix-2^21 limbs and the relation 2^252 = -c (mod L), where
-/// L = 2^252 + c. After folding, -L < r < L; adding L when r is negative
-/// produces the canonical scalar.
+/// Uses radix `2^21` limbs and the relation `2^252 = -c (mod L)`, where
+/// `L = 2^252 + c`. After folding, `-L < r < L`; adding `L` when `r` is
+/// negative produces a canonical scalar.
 pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
     #[inline(always)]
     fn fold(limbs: &mut [i64; 24], index: usize) {
@@ -35,11 +35,11 @@ pub(crate) fn reduce_wide_into(wide: &[u8; 64], reduced: &mut [u8; 32]) {
     }
 
     let mut limbs = [0i64; 24];
-    for i in 0..23 {
+    for (i, limb) in limbs.iter_mut().enumerate().take(23) {
         let bit = i * 21;
         let byte = bit / 8;
         let word = u32::from_le_bytes(wide[byte..byte + 4].try_into().unwrap());
-        limbs[i] = i64::from((word >> (bit % 8)) & 0x1f_ffff);
+        *limb = i64::from((word >> (bit % 8)) & 0x1f_ffff);
     }
     limbs[23] = i64::from(u32::from_le_bytes(wide[60..64].try_into().unwrap()) >> 3);
 
