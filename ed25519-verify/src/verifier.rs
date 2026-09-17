@@ -5,11 +5,14 @@ use {
             PUBKEY_SERIALIZED_SIZE, SIGNATURE_SERIALIZED_SIZE,
         },
         error::Ed25519VerifyError,
-        points::{compute_challenge, is_small_order, multiply_by_8},
+        points::{
+            compute_challenge_into, is_small_order, is_small_order_canonical,
+            multiscalar_multiply_edwards_2,
+        },
         scalar, VerificationCriteria,
     },
     solana_curve25519::{
-        edwards::{multiscalar_multiply_edwards, subtract_edwards, PodEdwardsPoint},
+        edwards::{subtract_edwards, PodEdwardsPoint},
         scalar::PodScalar,
     },
 };
@@ -56,6 +59,7 @@ impl Ed25519Verifier {
     /// Checks `S*B - H(R || A || M)*A - R == identity`, multiplied by the
     /// cofactor 8 when [`VerificationCriteria::cofactored`] is set.
     /// Canonical-encoding and small-order rejections run first.
+    #[inline(always)]
     pub fn verify_signature(
         &self,
         signature: &[u8; SIGNATURE_SERIALIZED_SIZE],
@@ -86,12 +90,13 @@ impl Ed25519Verifier {
             return Err(Ed25519VerifyError::SmallOrderR);
         }
 
-        let challenge = compute_challenge(r_bytes, public_key, message);
+        let mut scalars = [PodScalar(*s_bytes), PodScalar([0u8; 32])];
+        compute_challenge_into(r_bytes, public_key, message, &mut scalars[1].0);
 
         // `S*(-B) + H*A` is `-(S*B - H*A)`, the negation of the value the
         // verification equation compares against `R`.
-        let neg_lhs = multiscalar_multiply_edwards(
-            &[PodScalar(*s_bytes), PodScalar(challenge)],
+        let neg_lhs = multiscalar_multiply_edwards_2(
+            &scalars,
             &[ED25519_BASEPOINT_NEGATED_COMPRESSED, public_key_point],
         )
         .ok_or(Ed25519VerifyError::InvalidEncoding)?;
@@ -113,8 +118,8 @@ impl Ed25519Verifier {
         let difference =
             subtract_edwards(&lhs, &r_point).ok_or(Ed25519VerifyError::InvalidEncoding)?;
 
-        // Exact identity satisfies both equations, so accept before paying for
-        // the cofactor multiplication.
+        // Exact identity satisfies both equations, so accept before performing
+        // the torsion lookup.
         if difference == EDWARDS_IDENTITY_COMPRESSED {
             return Ok(());
         }
@@ -124,11 +129,9 @@ impl Ed25519Verifier {
         if !self.criteria.cofactored {
             return Err(Ed25519VerifyError::SignatureMismatch);
         }
-        // `difference` came from `subtract_edwards`, so `None` should be
-        // unreachable; `InvalidEncoding` is defensive.
-        if multiply_by_8(&difference).ok_or(Ed25519VerifyError::InvalidEncoding)?
-            != EDWARDS_IDENTITY_COMPRESSED
-        {
+        // Subtraction produces a valid, canonical encoding.
+        // Its cofactor multiple is identity exactly when it is a torsion point.
+        if !is_small_order_canonical(&difference) {
             return Err(Ed25519VerifyError::SignatureMismatch);
         }
 

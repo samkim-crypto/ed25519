@@ -44,11 +44,9 @@ pub struct VerificationCriteria {
     /// Use the cofactored verification equation
     /// `[8](S·B − H·A − R) == identity`.
     ///
-    /// When `false`, the cofactorless equation `S·B − H·A − R == identity` is
-    /// used, which rejects mixed-order points that the cofactored equation
-    /// tolerates. The cofactored form costs one extra multiplication by the
-    /// cofactor 8, which the verifier performs as three `sol_curve_group_op`
-    /// additions.
+    /// When `false`, the difference must be the identity.
+    /// When `true`, any torsion difference is accepted, using a lookup of
+    /// its canonical compressed encoding.
     pub cofactored: bool,
     /// Reject public keys whose compressed `y`-coordinate is `>= p` (a
     /// non-canonical encoding of a reduced point).
@@ -57,13 +55,13 @@ pub struct VerificationCriteria {
     pub require_canonical_r: bool,
     /// Reject public keys that lie in the small-order (torsion) subgroup.
     ///
-    /// Costs a multiplication by the cofactor 8 (three `sol_curve_group_op`
-    /// additions) when enabled.
+    /// Costs one point addition to validate the input and produce a canonical
+    /// encoding, followed by a torsion lookup, when enabled.
     pub reject_small_order_a: bool,
     /// Reject signature `R` values that lie in the small-order subgroup.
     ///
-    /// Costs a multiplication by the cofactor 8 (three `sol_curve_group_op`
-    /// additions) when enabled.
+    /// Costs one point addition to validate the input and produce a canonical
+    /// encoding, followed by a torsion lookup, when enabled.
     pub reject_small_order_r: bool,
 }
 
