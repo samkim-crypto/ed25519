@@ -97,8 +97,8 @@ non-canonical encodings and rejects inputs that do not decompress. The 473 CU
 figure above is the addition syscall charge in the benchmark runtime; the total
 check also includes the surrounding SBF instructions.
 
-Canonical `S` (`S < L`) has no knob. Every profile worth targeting requires it â€”
-accepting `S ≥ L` reintroduces signature malleability and
+Canonical `S` (`S < L`) has no knob. Every profile worth targeting requires it
+because accepting `S ≥ L` reintroduces signature malleability. The syscall
 `sol_curve_multiscalar_mul` enforces it regardless, converting scalars through
 `Scalar::from_canonical_bytes` and rejecting out-of-range values before any group
 operation runs.

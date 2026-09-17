@@ -118,8 +118,8 @@ impl Ed25519Verifier {
         let difference =
             subtract_edwards(&lhs, &r_point).ok_or(Ed25519VerifyError::InvalidEncoding)?;
 
-        // Exact identity satisfies both equations, so accept before paying for
-        // the cofactor multiplication.
+        // Exact identity satisfies both equations, so accept before performing
+        // the torsion lookup.
         if difference == EDWARDS_IDENTITY_COMPRESSED {
             return Ok(());
         }
