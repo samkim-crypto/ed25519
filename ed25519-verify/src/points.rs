@@ -43,8 +43,9 @@ pub(crate) fn compute_challenge_into(
     message: &[u8],
     challenge: &mut [u8; 32],
 ) {
-    let digest = solana_sha512_hasher::hashv(&[signature_r, public_key, message]).to_bytes();
-    scalar::reduce_wide_into(&digest, challenge);
+    // Borrow the digest to avoid a 64-byte copy before reduction on SBF.
+    let digest = solana_sha512_hasher::hashv(&[signature_r, public_key, message]);
+    scalar::reduce_wide_into(digest.as_bytes(), challenge);
 }
 
 #[cfg(test)]
